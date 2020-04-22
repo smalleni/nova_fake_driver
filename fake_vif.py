@@ -4,19 +4,27 @@
 # It then can be invoked from nova.conf via
 # compute_driver=fake_vif.OVSFakeDriver
 
+import errno
 import netaddr
 
 import nova.conf
 from nova import utils
+import nova.privsep.fake_vif_net
 from nova.virt import fake
 
 from oslo_concurrency import processutils
 from oslo_log import log as logging
+from oslo_privsep import capabilities as caps
+from oslo_privsep import priv_context
+
+from pyroute2 import netns
 
 
 CONF = nova.conf.CONF
 
 LOG = logging.getLogger(__name__)
+
+
 
 
 def execute_wrapper(args, root_helper):
@@ -37,17 +45,15 @@ def execute_wrapper(args, root_helper):
 
 def add_namespace(ns):
     root_helper = utils.get_root_helper()
-    full_args = ["ip", "netns", "add", ns]
-    execute_wrapper(full_args, root_helper)
+    nova.privsep.fake_vif_net.create_netns(ns)
+    #  full_args = ["ip", "netns", "add", ns]
+    #execute_wrapper(full_args, root_helper)
     full_args = ["ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"]
     execute_wrapper(full_args, root_helper)
 
 
 def delete_namespace(ns):
-    root_helper = utils.get_root_helper()
-    # deleting namespace will delete its ports and veth pairs
-    full_args = ["ip", "netns", "del", ns]
-    execute_wrapper(full_args, root_helper)
+    nova.privsep.fake_vif_net.remove_netns(ns)
 
 
 def add_port_ip_addresses(ns, ovs_port, ip_addresses):
