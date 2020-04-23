@@ -4,91 +4,55 @@
 # It then can be invoked from nova.conf via
 # compute_driver=fake_vif.OVSFakeDriver
 
-import errno
-import netaddr
+import httplib2
+import json
+import socket
+from six.moves import http_client as httplib
 
 import nova.conf
-from nova import utils
 import nova.privsep.fake_vif_net
 from nova.virt import fake
 
-from oslo_concurrency import processutils
 from oslo_log import log as logging
-from oslo_privsep import capabilities as caps
-from oslo_privsep import priv_context
-
-from pyroute2 import netns
 
 
 CONF = nova.conf.CONF
 
 LOG = logging.getLogger(__name__)
+socket_path = "/var/log/nova/fake_driver_netns.sock"
 
 
+class UnixDomainHTTPConnection(httplib.HTTPConnection):
+    """Connection class for HTTP over UNIX domain socket."""
+    def __init__(self, host, port=None, strict=None, timeout=None,
+                 proxy_info=None):
+        httplib.HTTPConnection.__init__(self, host, port, strict)
+        self.socket_path = socket_path
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.connect(self.socket_path)
 
 
-def execute_wrapper(args, root_helper):
-    LOG.info(
-        "running command: %s",
-        " ".join(str(arg) for arg in args),
-    )
-    try:
-        return processutils.execute(*args, run_as_root=True,
-                                    root_helper=root_helper)
-    except Exception as e:
-        LOG.error(
-            "Unable to execute %(cmd)s. Exception: %(exception)s",
-            {"cmd": args, "exception": e},
-        )
-        raise
+class FakeNovaDriverClientConnection(UnixDomainHTTPConnection):
+    def __init__(self, *args, **kwargs):
+        # Old style super initialization is required!
+        UnixDomainHTTPConnection.__init__(
+            self, *args, **kwargs)
 
 
-def add_namespace(ns):
-    root_helper = utils.get_root_helper()
-    nova.privsep.fake_vif_net.create_netns(ns)
-    #  full_args = ["ip", "netns", "add", ns]
-    #execute_wrapper(full_args, root_helper)
-    full_args = ["ip", "netns", "exec", ns, "ip", "link", "set", "lo", "up"]
-    execute_wrapper(full_args, root_helper)
+def send_command(command):
+    # Note that the message is sent via a Unix domain socket so that
+    # the URL doesn't matter.
+    resp, content = httplib2.Http().request(
+        'http://127.0.0.1/',
+        method="POST",
+        headers={'Content-Type': 'application/json'},
+        body=json.dumps(command),
+        connection_type=FakeNovaDriverClientConnection)
 
-
-def delete_namespace(ns):
-    nova.privsep.fake_vif_net.remove_netns(ns)
-
-
-def add_port_ip_addresses(ns, ovs_port, ip_addresses):
-    root_helper = utils.get_root_helper()
-    for address in ip_addresses:
-        full_args = ["ip", "netns", "exec", ns,
-                     "ip", "addr", "add", address, "dev", ovs_port]
-        execute_wrapper(full_args, root_helper)
-
-
-def add_port(ns, bridge, ovs_port, port_id, mac_address):
-    root_helper = utils.get_root_helper()
-    full_args = ["ovs-vsctl", "--may-exist", "add-port", bridge, ovs_port,
-                 "--", "set", "Interface", ovs_port, "type=internal",
-                 "--", "set", "Interface", ovs_port,
-                 "external_ids:iface-id=%s" % port_id,
-                 "--", "set", "Interface", ovs_port,
-                 "external-ids:iface-status=active",
-                 "--", "set", "Interface", ovs_port,
-                 "external-ids:attached-mac=%s" % mac_address]
-    execute_wrapper(full_args, root_helper)
-    full_args = ["ip", "link", "set", ovs_port, "netns", ns]
-    execute_wrapper(full_args, root_helper)
-    namespace = ["ip", "netns", "exec", ns]
-    full_args = namespace + ["ip", "link", "set", ovs_port, "up"]
-    execute_wrapper(full_args, root_helper)
-    namespace = ["ip", "netns", "exec", ns]
-    full_args = namespace + ["ip", "link", "set", ovs_port, "address", mac_address]
-    execute_wrapper(full_args, root_helper)
-
-
-def delete_port(ns, bridge, ovs_port):
-    root_helper = utils.get_root_helper()
-    full_args = ["ovs-vsctl", "--if-exists", "del-port", bridge, ovs_port]
-    execute_wrapper(full_args, root_helper)
+    if resp.status != 200:
+        raise Exception('Unexpected response %s' % resp)
 
 
 class OVSFakeDriver(fake.FakeDriver):
@@ -112,41 +76,26 @@ class OVSFakeDriver(fake.FakeDriver):
             network_info, block_device_info=block_device_info,
             destroy_disks=destroy_disks)
 
-    def get_ip_addresses(self, vif):
-        addresses = []
-        network = vif.get("network", {})
-        for subnet in network.get("subnets", []):
-            if subnet and subnet.get("version", "") == 4:
-                cidr = subnet.get("cidr", None)
-                for ip in subnet.get("ips", []):
-                    ip_address = ip.get("address", None)
-                    if cidr and ip_address:
-                        prefixlen = netaddr.IPNetwork(cidr).prefixlen
-                        ip_address = "%s/%s" % (ip_address, prefixlen)
-                        addresses = addresses + [ip_address]
-        return addresses
-
     def plug_vif(self, instance, vif):
-        bridge = "br-int"
         dev = vif.get("devname")
         port = vif.get("id")
         mac_address = vif.get("address")
         if not dev or not port or not mac_address:
             return
         ns = "fake-%s" % instance.uuid
-        add_port(ns, bridge, dev, port, mac_address)
-        ip_addresses = self.get_ip_addresses(vif)
-        add_port_ip_addresses(ns, dev, ip_addresses)
+        command = {"add_port": {"namespace": ns,
+                                "vif": vif}}
+        send_command(command)
 
     def plug_vifs(self, instance, network_info):
         """Plug VIFs into networks."""
         ns = "fake-%s" % instance.uuid
-        add_namespace(ns)
+        command = {"add_namespace": {"namespace": ns}}
+        send_command(command)
         for vif in network_info:
             self.plug_vif(instance, vif)
 
     def unplug_vif(self, instance, vif):
-        bridge = "br-int"
         dev = vif.get("devname")
         port = vif.get("id")
         if not dev:
@@ -154,7 +103,9 @@ class OVSFakeDriver(fake.FakeDriver):
                 return
             dev = "tap" + str(port[0:11])
         ns = "fake-%s" % instance.uuid
-        delete_port(ns, bridge, dev)
+        command = {"delete_port": {"namespace": ns,
+                                   "vif": vif}}
+        send_command(command)
 
     def unplug_vifs(self, instance, network_info):
         """Unplug VIFs from networks."""
@@ -162,4 +113,5 @@ class OVSFakeDriver(fake.FakeDriver):
             self.unplug_vif(instance, vif)
         # delete namespace after removing ovs ports
         ns = "fake-%s" % instance.uuid
-        delete_namespace(ns)
+        command = {"delete_namespace": {"namespace": ns}}
+        send_command(command)
