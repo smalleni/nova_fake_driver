@@ -10,7 +10,6 @@ import socket
 from six.moves import http_client as httplib
 
 import nova.conf
-import nova.privsep.fake_vif_net
 from nova.virt import fake
 
 from oslo_log import log as logging

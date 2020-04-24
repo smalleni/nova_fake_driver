@@ -40,7 +40,8 @@ def delete_namespace(ns):
     execute_command(full_args)
 
 
-def add_port(ns, bridge, ovs_port, port_id, mac_address, ip_addresses):
+def add_port(ns, bridge, ovs_port, port_id,
+             mac_address, ip_addresses, gateway):
     cmd = ["sudo", "ovs-vsctl", "--may-exist",
            "add-port", bridge, ovs_port,
            "--", "set", "Interface", ovs_port,
@@ -69,6 +70,11 @@ def add_port(ns, bridge, ovs_port, port_id, mac_address, ip_addresses):
                "ip", "addr", "add", address, "dev", ovs_port]
         execute_command(cmd)
 
+    namespace = ["sudo", "ip", "netns", "exec", ns]
+    cmd = namespace + ["ip", "route", "add", "default"]
+    cmd = cmd + ["via", gateway, "dev", ovs_port]
+    execute_command(cmd)
+
 
 def delete_port(ns, bridge, ovs_port):
     cmd = ["sudo", "ovs-vsctl", "--if-exists", "del-port", bridge, ovs_port]
@@ -90,6 +96,15 @@ def get_ip_addresses(vif):
     return addresses
 
 
+def get_default_route(vif):
+    network = vif.get("network", {})
+    for subnet in network.get("subnets", []):
+        if subnet and subnet.get("version", "") == 4:
+            gateway = subnet.get("gateway", {})
+            return gateway.get("address", None)
+    return None
+
+
 def plug_vif(ns, vif):
     bridge = "br-int"
     dev = vif.get("devname")
@@ -98,7 +113,8 @@ def plug_vif(ns, vif):
     if not dev or not port or not mac_address:
         return
     ip_addresses = get_ip_addresses(vif)
-    add_port(ns, bridge, dev, port, mac_address, ip_addresses)
+    gateway = get_default_route(vif)
+    add_port(ns, bridge, dev, port, mac_address, ip_addresses, gateway)
 
 
 def unplug_vif(ns, vif):
@@ -158,4 +174,6 @@ def netns_handler(req, *args, **kwargs):
 socket = eventlet.listen(socket_path, family=socket.AF_UNIX, backlog=4906)
 
 eventlet.wsgi.server(socket, netns_handler,
-                     protocol=UnixDomainHttpProtocol)
+                     protocol=UnixDomainHttpProtocol,
+                     keepalive=True,
+                     socket_timeout=None)

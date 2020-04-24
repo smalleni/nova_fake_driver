@@ -1,0 +1,102 @@
+Initial commit creates namespace using “ip netns add” command. This worked in devstack environment 
+https://github.com/venkataanil/nova_fake_driver/commit/8c1b58920721ba59dd223e54226f1112379504c3
+
+Later commit enhanced it to use  nova’s privsep privileges helper and iproute2 to create the namespace
+https://github.com/venkataanil/nova_fake_driver/commit/93fd52ae9fe4f100c187dce862efc201f01011b0
+
+Issues
+But both the approaches are not working when deployed in OSP16, which uses containers i.e
+this fake driver is part of nova compute container, and resulting network namespace created inside this container
+
+[root@compute-0 ~]# docker exec -it -u root nova_compute sh
+Emulate Docker CLI using podman. Create /etc/containers/nodocker to quiet msg.
+()[root@compute-0 /]$ ip netns
+fake-7706176d-640a-4291-98fa-8bec3244d84e (id: 1)
+fake-99efbf31-bd17-4c87-a02f-fe97e98e1941 (id: 0)
+
+
+But this namespace is not available on the host i.e
+We will see below error
+	Error: Peer netns reference is invalid.
+ NETNSID is not set on the name space, for example, (id: 0) which we can see at the end
+
+[root@compute-0 ~]# ip netns
+Error: Peer netns reference is invalid.
+Error: Peer netns reference is invalid.
+Error: Peer netns reference is invalid.
+fake-7706176d-640a-4291-98fa-8bec3244d84e
+Error: Peer netns reference is invalid.
+fake-99efbf31-bd17-4c87-a02f-fe97e98e1941
+
+
+Analysis
+--------
+Network namespace will exist only when some process is using it.
+Here we are just creating the namespace and not spawning any process on it.
+While the namespace is created in the container, kernel will mount the namespace
+on /run/netns path using “nsfs” pseudo file system to keep reference to the
+namespace though no process is using it. As this is a pseudo file system
+(and not proc based) which is mounted on a container, we can’t see this
+(i.e inode of /run/netns/fake-abc in container different from /run/netns/fake-abc
+in host) on host machine. As a result “ip netns” is not showing namespace on host.
+
+We need to spawn a process in the namespace to fix it and follow below steps
+
+Steps in container
+------------------
+Spawn a process
+ip netns exec fake-7706176d-640a-4291-98fa-8bec3244d84e sleep 1200
+
+Check netns file descriptor for this process
+()[root@compute-0 /]$ ls -al /proc/15463/ns/net
+lrwxrwxrwx. 1 root root 0 Apr 22 11:36 /proc/15463/ns/net -> 'net:[4026536599]'
+
+That descriptor will be nothing but the inode of the namespace file
+()[root@compute-0 /]$ ls -i /run/netns/fake-7706176d-640a-4291-98fa-8bec3244d84e
+4026536599 /run/netns/fake-7706176d-640a-4291-98fa-8bec3244d84e
+
+You can see that nsfs filesystem is used for mounting this
+()[root@compute-0 /]$ mount | grep netns
+tmpfs on /run/netns type tmpfs (rw,nosuid,nodev,seclabel,mode=755)
+
+nsfs on /run/netns/fake-7706176d-640a-4291-98fa-8bec3244d84e type nsfs (rw,seclabel)
+nsfs on /run/netns/fake-99efbf31-bd17-4c87-a02f-fe97e98e1941 type nsfs (rw,seclabel)
+
+
+Steps on Host
+There won’t be nsfs mount for this namespace in host
+[root@compute-0 ~]# mount | grep netns
+tmpfs on /run/netns type tmpfs (rw,nosuid,nodev,seclabel,mode=755)
+
+Inode of namespace will be different
+[root@compute-0 ~]# ls -i /run/netns/fake-7706176d-640a-4291-98fa-8bec3244d84e
+20381483 /run/netns/fake-7706176d-640a-4291-98fa-8bec3244d84e
+
+Capture the inode information from the “sleep” process in the host machine
+[root@compute-0 ~]# ls -al /proc/919671/ns/net
+lrwxrwxrwx. 1 root root 0 Apr 22 11:37 /proc/919671/ns/net -> 'net:[4026536599]'
+Note: sleep process pid in container and in host are different
+
+ Bind mount this on namespace’s path 
+[root@compute-0 ~]# mount --bind /proc/919671/ns/net /run/netns/fake-7706176d-640a-4291-98fa-8bec3244d84e
+
+We can see now inode of namespace path has changed 
+[root@compute-0 ~]# ls -i /run/netns/fake-7706176d-640a-4291-98fa-8bec3244d84e
+4026536599 /run/netns/fake-7706176d-640a-4291-98fa-8bec3244d84e
+
+We can now see the namespace content
+[root@compute-0 ~]# ip netns exec fake-7706176d-640a-4291-98fa-8bec3244d84e ip a
+1: lo: <LOOPBACK,UP,LOWER_UP> mtu 65536 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/loopback 00:00:00:00:00:00 brd 00:00:00:00:00:00
+    inet 127.0.0.1/8 scope host lo
+       valid_lft forever preferred_lft forever
+    inet6 ::1/128 scope host 
+       valid_lft forever preferred_lft forever
+31: tapb9569170-6f: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/ether fa:16:3e:ac:75:24 brd ff:ff:ff:ff:ff:ff
+    inet 91.0.0.123/24 scope global tapb9569170-6f
+       valid_lft forever preferred_lft forever
+    inet6 fe80::8b8:7cff:fee2:59c9/64 scope link 
+       valid_lft forever preferred_lft forever
+
+
