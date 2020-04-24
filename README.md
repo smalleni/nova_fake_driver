@@ -41,5 +41,8 @@ for creating network namespace and ports when it gets a request to spawn a new V
 Challenges encountered with alternative approaches i.e nova fake driver
 directly adding namespaces and ports inside container are documented in [2]
 
+TODO: Enhance it to create tap port on linux bridge and then connect to OVS br-int,
+to test iptables firewall driver in ML2/OVS.
+
 [1] /var/log/containers/nova/fake_driver_netns.sock 
 [2] "alternatives" file in this repo
