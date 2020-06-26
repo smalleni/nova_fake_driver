@@ -41,7 +41,8 @@ def delete_namespace(ns):
 
 
 def add_port(ns, bridge, ovs_port, port_id,
-             mac_address, ip_addresses, gateway):
+             mac_address, ip_addresses, gateway, mtu):
+    namespace = ["sudo", "ip", "netns", "exec", ns]
     cmd = ["sudo", "ovs-vsctl", "--may-exist",
            "add-port", bridge, ovs_port,
            "--", "set", "Interface", ovs_port,
@@ -57,20 +58,21 @@ def add_port(ns, bridge, ovs_port, port_id,
     cmd = ["sudo", "ip", "link", "set", ovs_port, "netns", ns]
     execute_command(cmd)
 
-    namespace = ["sudo", "ip", "netns", "exec", ns]
     cmd = namespace + ["ip", "link", "set", ovs_port, "up"]
     execute_command(cmd)
 
-    namespace = ["sudo", "ip", "netns", "exec", ns]
     cmd = namespace + ["ip", "link", "set", ovs_port, "address", mac_address]
     execute_command(cmd)
+
+    if mtu:
+        cmd = namespace + ["ip", "link", "set", "dev", ovs_port, "mtu", "%s" % mtu]
+        execute_command(cmd)
 
     for address in ip_addresses:
         cmd = ["sudo", "ip", "netns", "exec", ns,
                "ip", "addr", "add", address, "dev", ovs_port]
         execute_command(cmd)
 
-    namespace = ["sudo", "ip", "netns", "exec", ns]
     cmd = namespace + ["ip", "route", "add", "default"]
     cmd = cmd + ["via", gateway, "dev", ovs_port]
     execute_command(cmd)
@@ -79,6 +81,14 @@ def add_port(ns, bridge, ovs_port, port_id,
 def delete_port(ns, bridge, ovs_port):
     cmd = ["sudo", "ovs-vsctl", "--if-exists", "del-port", bridge, ovs_port]
     execute_command(cmd)
+
+
+def get_mtu(vif):
+    network = vif.get("network", {})
+    if network.get("meta") and network["meta"].get("mtu"):
+        return network["meta"]["mtu"]
+    else:
+        return None
 
 
 def get_ip_addresses(vif):
@@ -114,7 +124,8 @@ def plug_vif(ns, vif):
         return
     ip_addresses = get_ip_addresses(vif)
     gateway = get_default_route(vif)
-    add_port(ns, bridge, dev, port, mac_address, ip_addresses, gateway)
+    mtu = get_mtu(vif)
+    add_port(ns, bridge, dev, port, mac_address, ip_addresses, gateway, mtu)
 
 
 def unplug_vif(ns, vif):

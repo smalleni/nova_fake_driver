@@ -84,12 +84,14 @@ class OVSFakeDriver(fake.FakeDriver):
         ns = "fake-%s" % instance.uuid
         command = {"add_port": {"namespace": ns,
                                 "vif": vif}}
+        LOG.info("fake-vif: Add port %s" % command)
         send_command(command)
 
     def plug_vifs(self, instance, network_info):
         """Plug VIFs into networks."""
         ns = "fake-%s" % instance.uuid
         command = {"add_namespace": {"namespace": ns}}
+        LOG.info("fake-vif: Add namespace %s" % command)
         send_command(command)
         for vif in network_info:
             self.plug_vif(instance, vif)
@@ -104,6 +106,7 @@ class OVSFakeDriver(fake.FakeDriver):
         ns = "fake-%s" % instance.uuid
         command = {"delete_port": {"namespace": ns,
                                    "vif": vif}}
+        LOG.info("fake-vif: Delete port %s" % command)
         send_command(command)
 
     def unplug_vifs(self, instance, network_info):
@@ -113,4 +116,5 @@ class OVSFakeDriver(fake.FakeDriver):
         # delete namespace after removing ovs ports
         ns = "fake-%s" % instance.uuid
         command = {"delete_namespace": {"namespace": ns}}
+        LOG.info("fake-vif: Delete namespace %s" % command)
         send_command(command)
