@@ -1,0 +1,34 @@
+---
+- hosts: compute
+  tasks:
+    - name: copy fake vif files to computes
+      copy:
+        src: "{{ item }}"
+        dest: "/tmp"
+      with_items:
+        - fake_vif.py
+        - fake_vif_wsgi_server.py
+      become: true
+    - name: copy fake_vif.py to container
+      shell: |
+        podman cp /tmp/fake_vif.py nova_compute:/usr/lib/python3.6/site-packages/nova/virt/
+      become: true
+    - name: change the Nova config to make use of this fake driver
+      shell: |
+        crudini --set /var/lib/config-data/puppet-generated/nova_libvirt/etc/nova/nova.conf DEFAULT compute_driver fake_vif.OVSFakeDriver
+      become: true
+    - name: start the wsgi server in the compute nodes
+      shell: |
+        python3 /tmp/fake_vif_wsgi_server.py &
+      become: true
+      ignore_errors: true
+      async: 2592000
+      poll: 0
+    - name: install needed packages for the driver
+      shell: |
+        podman exec -it -u root nova_compute pip3 install fixtures httplib2
+      become: true
+    - name: restart the nova_compute containers to apply the changes
+      shell: |
+        podman restart nova_compute
+      become: true
