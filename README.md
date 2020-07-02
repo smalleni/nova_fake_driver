@@ -11,6 +11,12 @@ This nova fake driver works in client server model. Here nova driver (fake) is
 the client which runs in container (in OSP) inside the compute and
 fake_vif_wsgi_server.py is the server which runs on the compute node host.
 
+# ansible installation
+Daniel Alvarez Sanchez has provided this ansible module. Run it from the
+undercloud like below which installs driver and the necessary configuration
+ansible-playbook -i hosts configure_fake_driver.yaml -vv 
+
+# manual installation
 Changes in nova_compute container in compute node
 1) copy fake_vif.py driver to nova python modules
    cp /var/log/nova/fake_vif.py /usr/lib/python3.6/site-packages/nova/virt/
