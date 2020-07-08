@@ -11,6 +11,12 @@ This nova fake driver works in client server model. Here nova driver (fake) is
 the client which runs in container (in OSP) inside the compute and
 fake_vif_wsgi_server.py is the server which runs on the compute node host.
 
+Note: If the OSP environment is deployed with ML2/OVS driver, use
+ fake_vif_wsgi_server_ovs.py instead of fake_vif_wsgi_server.py as this
+create linux bridge for the tap device for iptables firewall driver i.e
+
+cp fake_vif_wsgi_server_ovs.py fake_vif_wsgi_server.py
+
 # ansible installation
 Daniel Alvarez Sanchez has provided this ansible module. Run it from the
 undercloud like below which installs driver and the necessary configuration
@@ -38,7 +44,10 @@ Server (fake_vif_wsgi_server.py) will listen on unix socket[1] for the requests
 from the client (i.e nova fake driver which is inside nova_compute container).
 When the client requests for adding or deleting namespace or ports,
 it does that through "ip netns" command (and adding OVS port to br-int)
-on the compute node host. 
+on the compute node host. In case of ml2/ovs, it creates a linux bridge and
+
+1) one veth pair is connected between linux bridge and namespace
+2) another veth pair connected between linux bridge and ovs br-int switch 
 
 Nova fake driver (fake_vif.py) which is in nova_compute container inside compute node,
 will send request to fake_vif_wsgi_server.py using unix socket during vif_plug
@@ -46,9 +55,6 @@ for creating network namespace and ports when it gets a request to spawn a new V
 
 Challenges encountered with alternative approaches i.e nova fake driver
 directly adding namespaces and ports inside container are documented in [2]
-
-TODO: Enhance it to create tap port on linux bridge and then connect to OVS br-int,
-to test iptables firewall driver in ML2/OVS.
 
 [1] /var/log/containers/nova/fake_driver_netns.sock 
 [2] "alternatives" file in this repo
